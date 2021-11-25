@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 var (
@@ -88,6 +89,31 @@ type Commit struct {
 type Actor struct {
 	Id       int64
 	Username string
+
+	Events []*Event
+}
+
+// don't do this in production, anyone can have bot in their name, but I want pretty results :D
+func (a *Actor) isActiveUser() bool {
+	return !strings.HasSuffix(a.Username, "[bot]") && !strings.HasSuffix(a.Username, "-bot") && !strings.HasSuffix(a.Username, "Bot") && !strings.Contains(a.Username, "-bot-")
+}
+
+func (a *Actor) countCommits() int {
+	commitCount := 0
+	for _, event := range a.Events {
+		commitCount += event.commitCount()
+	}
+	return commitCount
+}
+
+func (a *Actor) countEventsWhere(fn func(*Event) bool) int {
+	count := 0
+	for _, event := range a.Events {
+		if fn(event) {
+			count++
+		}
+	}
+	return count
 }
 
 type Database struct {
@@ -178,6 +204,7 @@ func (db *Database) LoadFromDataPath() {
 	// load events
 	log.Printf("Started loading data from file %s", EventsFileName)
 	tmpRepoEvents := map[int64][]*Event{}
+	tmpActorEvents := map[int64][]*Event{}
 	db.processCsvFile(
 		generatePath(db.DataPath, EventsFileName),
 		func(record []string) {
@@ -199,8 +226,16 @@ func (db *Database) LoadFromDataPath() {
 			} else {
 				tmpRepoEvents[repoId] = []*Event{db.Events[eventId]}
 			}
+			if _, ok := tmpActorEvents[actorId]; ok {
+				tmpActorEvents[actorId] = append(tmpActorEvents[actorId], db.Events[eventId])
+			} else {
+				tmpActorEvents[actorId] = []*Event{db.Events[eventId]}
+			}
 		},
 	)
+	for actorId, _ := range db.Actors {
+		db.Actors[actorId].Events = tmpActorEvents[actorId]
+	}
 	log.Printf("Done loading data from file %s", EventsFileName)
 
 	// load repos
@@ -220,24 +255,24 @@ func (db *Database) LoadFromDataPath() {
 	log.Printf("Done loading data from file %s", ReposFileName)
 }
 
-type Pair struct {
-	Element *Repo
-	Value   int
+type RepoAnalysisItem struct {
+	Repo  *Repo
+	Count int
 }
 
-func (db *Database) GetReposWithMostWatchEvents(n int) []*Pair {
-	topNrepos := []*Pair{}
+func (db *Database) GetReposWithMostWatchEvents(n int) []*RepoAnalysisItem {
+	topNrepos := []*RepoAnalysisItem{}
 
 	for _, repo := range db.Repos {
 		numberOfWatchEvents := repo.countEventsWhere(func(e *Event) bool { return e.isWatchEvent() })
 
 		if len(topNrepos) == 0 || len(topNrepos) < n {
-			topNrepos = append(topNrepos, &Pair{Element: repo, Value: numberOfWatchEvents})
-		} else if topNrepos[len(topNrepos)-1].Value < numberOfWatchEvents {
+			topNrepos = append(topNrepos, &RepoAnalysisItem{Repo: repo, Count: numberOfWatchEvents})
+		} else if topNrepos[len(topNrepos)-1].Count < numberOfWatchEvents {
 			topNrepos = topNrepos[:len(topNrepos)-1]
-			topNrepos = append(topNrepos, &Pair{Element: repo, Value: numberOfWatchEvents})
+			topNrepos = append(topNrepos, &RepoAnalysisItem{Repo: repo, Count: numberOfWatchEvents})
 			sort.Slice(topNrepos, func(i, j int) bool {
-				return topNrepos[i].Value > topNrepos[j].Value
+				return topNrepos[i].Count > topNrepos[j].Count
 			})
 		}
 	}
@@ -245,24 +280,63 @@ func (db *Database) GetReposWithMostWatchEvents(n int) []*Pair {
 	return topNrepos
 }
 
-func (db *Database) GetReposWithMostCommits(n int) []*Pair {
-	topNrepos := []*Pair{}
+func (db *Database) GetReposWithMostCommits(n int) []*RepoAnalysisItem {
+	topNrepos := []*RepoAnalysisItem{}
 
 	for _, repo := range db.Repos {
 		numberOfCommits := repo.countCommits()
 
 		if len(topNrepos) == 0 || len(topNrepos) < n {
-			topNrepos = append(topNrepos, &Pair{Element: repo, Value: numberOfCommits})
-		} else if topNrepos[len(topNrepos)-1].Value < numberOfCommits {
+			topNrepos = append(topNrepos, &RepoAnalysisItem{Repo: repo, Count: numberOfCommits})
+		} else if topNrepos[len(topNrepos)-1].Count < numberOfCommits {
 			topNrepos = topNrepos[:len(topNrepos)-1]
-			topNrepos = append(topNrepos, &Pair{Element: repo, Value: numberOfCommits})
+			topNrepos = append(topNrepos, &RepoAnalysisItem{Repo: repo, Count: numberOfCommits})
 			sort.Slice(topNrepos, func(i, j int) bool {
-				return topNrepos[i].Value > topNrepos[j].Value
+				return topNrepos[i].Count > topNrepos[j].Count
 			})
 		}
 	}
 
 	return topNrepos
+}
+
+type UserAnalysisItem struct {
+	User        *Actor
+	PrCount     int
+	CommitCount int
+}
+
+func (db *Database) GetActiveUsersWithMostPRsAndCommits(n int) []*UserAnalysisItem {
+	topNusers := []*UserAnalysisItem{}
+
+	for _, actor := range db.Actors {
+		if actor.isActiveUser() {
+			// number of pr events
+			numberOfPrEvents := actor.countEventsWhere(func(e *Event) bool { return e.isPullRequestEvent() })
+			// number of commits
+			numberOfCommits := actor.countCommits()
+
+			if len(topNusers) == 0 || len(topNusers) < n {
+				topNusers = append(topNusers, &UserAnalysisItem{User: actor, PrCount: numberOfPrEvents, CommitCount: numberOfCommits})
+			} else if topNusers[len(topNusers)-1].PrCount <= numberOfPrEvents {
+				topNusers = append(topNusers, &UserAnalysisItem{User: actor, PrCount: numberOfPrEvents, CommitCount: numberOfCommits})
+				sort.Slice(topNusers, func(i, j int) bool {
+					if topNusers[i].PrCount < topNusers[j].PrCount {
+						return false
+					} else if topNusers[i].PrCount > topNusers[j].PrCount {
+						return true
+					} else {
+						return topNusers[i].CommitCount > topNusers[j].CommitCount
+					}
+				})
+
+				topNusers = topNusers[:len(topNusers)-1]
+
+			}
+		}
+	}
+
+	return topNusers
 }
 
 func initialize() {
@@ -308,16 +382,23 @@ func main() {
 	n := 10
 
 	log.Println("")
+	log.Printf("Displaying top %d active non-bot users with most watch events:", n)
+	userActivityAnalysisResults := Db.GetActiveUsersWithMostPRsAndCommits(n)
+	for _, result := range userActivityAnalysisResults {
+		log.Printf("%s: %d PRs, %d commits", result.User.Username, result.PrCount, result.CommitCount)
+	}
+
+	log.Println("")
 	log.Printf("Displaying top %d repositories with most watch events:", n)
 	watchEventAnalysisResults := Db.GetReposWithMostWatchEvents(n)
 	for _, result := range watchEventAnalysisResults {
-		log.Printf("%s: %d commits", result.Element.Name, result.Value)
+		log.Printf("%s: %d commits", result.Repo.Name, result.Count)
 	}
 
 	log.Println("")
 	log.Printf("Displaying top %d repositories with most commits:", n)
 	commitAnalysisResults := Db.GetReposWithMostCommits(n)
 	for _, result := range commitAnalysisResults {
-		log.Printf("%s: %d commits", result.Element.Name, result.Value)
+		log.Printf("%s: %d commits", result.Repo.Name, result.Count)
 	}
 }
