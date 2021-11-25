@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 )
 
@@ -17,6 +18,7 @@ var (
 	CommitsFileName = "commits.csv"
 	EventsFileName  = "events.csv"
 	ReposFileName   = "repos.csv"
+	Db              *Database
 )
 
 func generatePath(pathElements ...string) string {
@@ -40,11 +42,41 @@ type Event struct {
 	Commits []*Commit
 }
 
+func (e *Event) isWatchEvent() bool {
+	return e.Type == "WatchEvent"
+}
+
+func (e *Event) isPullRequestEvent() bool {
+	return e.Type == "PullRequestEvent"
+}
+
+func (e *Event) commitCount() int {
+	return len(e.Commits)
+}
+
 type Repo struct {
 	Id   int64
 	Name string
 
 	Events []*Event
+}
+
+func (r *Repo) countEventsWhere(fn func(*Event) bool) int {
+	count := 0
+	for _, event := range r.Events {
+		if fn(event) {
+			count++
+		}
+	}
+	return count
+}
+
+func (r *Repo) countCommits() int {
+	commitCount := 0
+	for _, event := range r.Events {
+		commitCount += event.commitCount()
+	}
+	return commitCount
 }
 
 type Commit struct {
@@ -76,11 +108,16 @@ func NewDatabase(dataPath string) *Database {
 	}
 }
 
-func (db *Database) processCsvFile(filePath string, processFn func([]string)) error {
+func (db *Database) processCsvFile(filePath string, processFn func([]string)) {
 	if f, err := os.Open(filePath); err != nil {
 		log.Fatalf("Could not read file %s Error: %s", filePath, err.Error())
 	} else {
-		defer f.Close()
+		defer func(f *os.File) {
+			err := f.Close()
+			if err != nil {
+				log.Printf("Failed to close file %s Error: %s", filePath, err.Error())
+			}
+		}(f)
 
 		// read csv values using csv.Reader
 		csvReader := csv.NewReader(f)
@@ -96,12 +133,11 @@ func (db *Database) processCsvFile(filePath string, processFn func([]string)) er
 			}
 		}
 	}
-
-	return nil
 }
 
-func (db *Database) LoadFromDataPath() error {
+func (db *Database) LoadFromDataPath() {
 	// load actors
+	log.Printf("Started loading data from file %s", ActorsFileName)
 	db.processCsvFile(
 		generatePath(db.DataPath, ActorsFileName),
 		func(record []string) {
@@ -113,8 +149,10 @@ func (db *Database) LoadFromDataPath() error {
 			}
 		},
 	)
+	log.Printf("Done loading data from file %s", ActorsFileName)
 
 	// load commits
+	log.Printf("Started loading data from file %s", CommitsFileName)
 	tmpEventCommits := map[int64][]*Commit{}
 	db.processCsvFile(
 		generatePath(db.DataPath, CommitsFileName),
@@ -128,15 +166,17 @@ func (db *Database) LoadFromDataPath() error {
 			}
 
 			// populate the inverse index
-			if commits, ok := tmpEventCommits[eventId]; ok {
-				commits = append(commits, db.Commits[record[0]])
+			if _, ok := tmpEventCommits[eventId]; ok {
+				tmpEventCommits[eventId] = append(tmpEventCommits[eventId], db.Commits[record[0]])
 			} else {
 				tmpEventCommits[eventId] = []*Commit{db.Commits[record[0]]}
 			}
 		},
 	)
+	log.Printf("Done loading data from file %s", CommitsFileName)
 
 	// load events
+	log.Printf("Started loading data from file %s", EventsFileName)
 	tmpRepoEvents := map[int64][]*Event{}
 	db.processCsvFile(
 		generatePath(db.DataPath, EventsFileName),
@@ -154,15 +194,17 @@ func (db *Database) LoadFromDataPath() error {
 			}
 
 			// populate the inverse index
-			if events, ok := tmpRepoEvents[repoId]; ok {
-				events = append(events, db.Events[eventId])
+			if _, ok := tmpRepoEvents[repoId]; ok {
+				tmpRepoEvents[repoId] = append(tmpRepoEvents[repoId], db.Events[eventId])
 			} else {
 				tmpRepoEvents[repoId] = []*Event{db.Events[eventId]}
 			}
 		},
 	)
+	log.Printf("Done loading data from file %s", EventsFileName)
 
 	// load repos
+	log.Printf("Started loading data from file %s", ReposFileName)
 	db.processCsvFile(
 		generatePath(db.DataPath, ReposFileName),
 		func(record []string) {
@@ -175,8 +217,32 @@ func (db *Database) LoadFromDataPath() error {
 			}
 		},
 	)
+	log.Printf("Done loading data from file %s", ReposFileName)
+}
 
-	return nil
+type Pair struct {
+	Element *Repo
+	Value   int
+}
+
+func (db *Database) GetReposWithMostCommits(n int) []*Pair {
+	topNrepos := []*Pair{}
+
+	for _, repo := range db.Repos {
+		numberOfCommits := repo.countCommits()
+
+		if len(topNrepos) == 0 || len(topNrepos) < n {
+			topNrepos = append(topNrepos, &Pair{Element: repo, Value: numberOfCommits})
+		} else if topNrepos[len(topNrepos)-1].Value < numberOfCommits {
+			topNrepos = topNrepos[:len(topNrepos)-1]
+			topNrepos = append(topNrepos, &Pair{Element: repo, Value: numberOfCommits})
+			sort.Slice(topNrepos, func(i, j int) bool {
+				return topNrepos[i].Value > topNrepos[j].Value
+			})
+		}
+	}
+
+	return topNrepos
 }
 
 func initialize() {
@@ -210,9 +276,21 @@ func initialize() {
 		}
 	}
 
-	NewDatabase(*DataFolderPath).LoadFromDataPath()
+	log.Printf("Loading database from data-path...")
+	Db = NewDatabase(*DataFolderPath)
+	Db.LoadFromDataPath()
+	log.Printf("Done loading the database!")
 }
 
 func main() {
 	initialize()
+
+	n := 10
+
+	log.Println("")
+	log.Printf("Displaying top %d repositories with most commits:", n)
+	results := Db.GetReposWithMostCommits(n)
+	for _, result := range results {
+		log.Printf("%s: %d commits", result.Element.Name, result.Value)
+	}
 }
