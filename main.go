@@ -225,6 +225,26 @@ type Pair struct {
 	Value   int
 }
 
+func (db *Database) GetReposWithMostWatchEvents(n int) []*Pair {
+	topNrepos := []*Pair{}
+
+	for _, repo := range db.Repos {
+		numberOfWatchEvents := repo.countEventsWhere(func(e *Event) bool { return e.isWatchEvent() })
+
+		if len(topNrepos) == 0 || len(topNrepos) < n {
+			topNrepos = append(topNrepos, &Pair{Element: repo, Value: numberOfWatchEvents})
+		} else if topNrepos[len(topNrepos)-1].Value < numberOfWatchEvents {
+			topNrepos = topNrepos[:len(topNrepos)-1]
+			topNrepos = append(topNrepos, &Pair{Element: repo, Value: numberOfWatchEvents})
+			sort.Slice(topNrepos, func(i, j int) bool {
+				return topNrepos[i].Value > topNrepos[j].Value
+			})
+		}
+	}
+
+	return topNrepos
+}
+
 func (db *Database) GetReposWithMostCommits(n int) []*Pair {
 	topNrepos := []*Pair{}
 
@@ -288,9 +308,16 @@ func main() {
 	n := 10
 
 	log.Println("")
+	log.Printf("Displaying top %d repositories with most watch events:", n)
+	watchEventAnalysisResults := Db.GetReposWithMostWatchEvents(n)
+	for _, result := range watchEventAnalysisResults {
+		log.Printf("%s: %d commits", result.Element.Name, result.Value)
+	}
+
+	log.Println("")
 	log.Printf("Displaying top %d repositories with most commits:", n)
-	results := Db.GetReposWithMostCommits(n)
-	for _, result := range results {
+	commitAnalysisResults := Db.GetReposWithMostCommits(n)
+	for _, result := range commitAnalysisResults {
 		log.Printf("%s: %d commits", result.Element.Name, result.Value)
 	}
 }
