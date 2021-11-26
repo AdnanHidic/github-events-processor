@@ -9,7 +9,7 @@
 2. Navigate to the repository root
 3. Execute the following command in terminal
 ```bash
-go run main.go database.go data_models.go helpers.go --data-path=/path/to/github-events-processor/data
+go run main.go database.go models.go helpers.go --data-path=/path/to/github-events-processor/data
 ```
 
 ### How to run tests

@@ -69,7 +69,7 @@ func main() {
 	fmt.Printf("Displaying top %d repositories with most watch events: \n", n)
 	watchEventAnalysisResults := Db.GetReposWithMostWatchEvents(n)
 	for _, result := range watchEventAnalysisResults {
-		fmt.Printf("%s: %d commits\n", result.Repo.Name, result.Count)
+		fmt.Printf("%s: %d watch events\n", result.Repo.Name, result.Count)
 	}
 
 	fmt.Println("")
