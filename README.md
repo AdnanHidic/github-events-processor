@@ -13,7 +13,7 @@ go run main.go database.go models.go helpers.go --data-path=/path/to/github-even
 ```
 
 ### How to run tests
-1. navigate to the repository root
+1. Navigate to the repository root
 2. Execute the following command in terminal
 ```bash
 go test *.go
